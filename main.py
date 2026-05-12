@@ -13,7 +13,9 @@ load_dotenv()
 
 from farmacia_monitor.scraper.pharmachatbot import coletar_todas
 from farmacia_monitor.processor.score import calcular_score, MetricasSemana
-from farmacia_monitor.database.db import init_db, SessionLocal, Farmacia, Coleta
+from farmacia_monitor.database.db import (
+    init_db, SessionLocal, Farmacia, Coleta, ColetaCanal
+)
 
 
 def carregar_farmacias() -> list[dict]:
@@ -38,28 +40,30 @@ def salvar_resultados(dados_coletados):
     try:
         for dado in dados_coletados:
             if dado.erro:
-                print(f"  [ERRO]    {dado.nome}: {dado.erro}")
+                print(f"  [ERRO]  {dado.nome}: {dado.erro}")
                 continue
 
             farmacia = db.query(Farmacia).filter(Farmacia.nome == dado.nome).first()
             if not farmacia:
-                print(f"  [AVISO]   {dado.nome} nao encontrada no banco.")
+                print(f"  [AVISO] {dado.nome} nao encontrada no banco.")
                 continue
 
             anterior = _coleta_anterior(db, farmacia.id)
             metricas_anterior = None
             if anterior:
                 metricas_anterior = MetricasSemana(
-                    total_atendimentos=int(anterior.total_atendimentos or 0),
-                    atendimentos_finalizados=int(anterior.atendimentos_finalizados or 0),
+                    clientes_google=int(anterior.clientes_google or 0),
+                    clientes_facebook=int(anterior.clientes_facebook or 0),
+                    clientes_grupos_oferta=int(anterior.clientes_grupos_oferta or 0),
                     vendas_realizadas=int(anterior.vendas_realizadas or 0),
                     receita_total=float(anterior.receita_total or 0),
                 )
 
             score_info = calcular_score(
                 MetricasSemana(
-                    total_atendimentos=dado.total_atendimentos,
-                    atendimentos_finalizados=dado.atendimentos_finalizados,
+                    clientes_google=dado.clientes_google,
+                    clientes_facebook=dado.clientes_facebook,
+                    clientes_grupos_oferta=dado.clientes_grupos_oferta,
                     vendas_realizadas=dado.vendas_realizadas,
                     receita_total=dado.receita_total,
                 ),
@@ -70,21 +74,30 @@ def salvar_resultados(dados_coletados):
                 farmacia_id=farmacia.id,
                 periodo_inicio=dado.periodo_inicio,
                 periodo_fim=dado.periodo_fim,
-                aguardando_atendimento=dado.aguardando_atendimento,
-                em_andamento=dado.em_andamento,
-                atendimentos_finalizados=dado.atendimentos_finalizados,
+                clientes_google=dado.clientes_google,
+                clientes_facebook=dado.clientes_facebook,
+                clientes_grupos_oferta=dado.clientes_grupos_oferta,
                 total_atendimentos=dado.total_atendimentos,
                 vendas_realizadas=dado.vendas_realizadas,
-                vendas_nao_realizadas=dado.vendas_nao_realizadas,
                 receita_total=dado.receita_total,
                 score_criticidade=score_info["score_criticidade"],
                 nivel_alerta=score_info["nivel_alerta"],
-                taxa_conversao=score_info["taxa_conversao"],
-                variacao_receita=score_info["variacao_receita"],
-                variacao_atendimentos=score_info["variacao_atendimentos"],
+                variacao_google=score_info["variacao_google"],
+                variacao_facebook=score_info["variacao_facebook"],
+                variacao_grupos=score_info["variacao_grupos"],
                 variacao_vendas=score_info["variacao_vendas"],
+                variacao_receita=score_info["variacao_receita"],
             )
             db.add(coleta)
+            db.flush()
+
+            # Salva breakdown completo de todos os canais
+            for nome_canal, total in dado.canais.items():
+                db.add(ColetaCanal(
+                    coleta_id=coleta.id,
+                    canal=nome_canal,
+                    atendimentos=total,
+                ))
 
             alertas = score_info.get("alertas", [])
             alerta_str = " | ".join(alertas) if alertas else "OK"
@@ -112,9 +125,8 @@ async def pipeline():
     print("\n  Processando e salvando...\n")
     salvar_resultados(resultados)
 
-    erros = [r for r in resultados if r.erro]
+    erros  = [r for r in resultados if r.erro]
     sucesso = len(resultados) - len(erros)
-
     print(f"\n{'='*60}")
     print(f"  Concluido: {sucesso}/{len(resultados)} farmacias coletadas")
     if erros:

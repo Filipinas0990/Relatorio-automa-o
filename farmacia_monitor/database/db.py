@@ -1,6 +1,6 @@
 from sqlalchemy import (
     create_engine, Column, Integer, String, Numeric,
-    Boolean, DateTime, Date, ForeignKey, CheckConstraint, text
+    Boolean, DateTime, Date, ForeignKey, CheckConstraint
 )
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, relationship
 from datetime import datetime
@@ -34,64 +34,54 @@ class Farmacia(Base):
 
 class Coleta(Base):
     __tablename__ = "coletas"
-
-    id                       = Column(Integer, primary_key=True)
-    farmacia_id              = Column(Integer, ForeignKey("farmacias.id", ondelete="CASCADE"), nullable=False)
-    data_coleta              = Column(DateTime(timezone=True), default=datetime.utcnow)
-    periodo_inicio           = Column(Date, nullable=False)
-    periodo_fim              = Column(Date, nullable=False)
-
-    # 4 badges principais do dashboard
-    aguardando_atendimento   = Column(Integer, default=0)
-    em_andamento             = Column(Integer, default=0)
-    atendimentos_finalizados = Column(Integer, default=0)
-    total_atendimentos       = Column(Integer, default=0)
-    # métricas extras
-    vendas_realizadas        = Column(Integer, default=0)
-    vendas_nao_realizadas    = Column(Integer, default=0)
-    receita_total            = Column(Numeric(12, 2), default=0)
-
-    taxa_conversao           = Column(Numeric(6, 2), default=0)
-    variacao_receita         = Column(Numeric(8, 2), default=0)
-    variacao_atendimentos    = Column(Numeric(8, 2), default=0)
-    variacao_vendas          = Column(Numeric(8, 2), default=0)
-
-    score_criticidade        = Column(Numeric(5, 2), default=0)
-    nivel_alerta             = Column(
-        String(10), default="verde",
-        nullable=False
-    )
     __table_args__ = (
-        CheckConstraint("nivel_alerta IN ('verde', 'amarelo', 'vermelho')", name="chk_nivel_alerta"),
+        CheckConstraint(
+            "nivel_alerta IN ('verde', 'amarelo', 'vermelho')",
+            name="chk_nivel_alerta"
+        ),
     )
 
-    farmacia  = relationship("Farmacia", back_populates="coletas")
-    canais    = relationship("ColetaCanal", back_populates="coleta", cascade="all, delete")
-    conexoes  = relationship("ColetaConexao", back_populates="coleta", cascade="all, delete")
+    id             = Column(Integer, primary_key=True)
+    farmacia_id    = Column(Integer, ForeignKey("farmacias.id", ondelete="CASCADE"), nullable=False)
+    data_coleta    = Column(DateTime(timezone=True), default=datetime.utcnow)
+    periodo_inicio = Column(Date, nullable=False)
+    periodo_fim    = Column(Date, nullable=False)
+
+    # Origem dos clientes
+    clientes_google        = Column(Integer, default=0)
+    clientes_facebook      = Column(Integer, default=0)
+    clientes_grupos_oferta = Column(Integer, default=0)
+    total_atendimentos     = Column(Integer, default=0)
+
+    # Vendas
+    vendas_realizadas = Column(Integer, default=0)
+    receita_total     = Column(Numeric(12, 2), default=0)
+
+    # Variações vs semana anterior (%)
+    variacao_google    = Column(Numeric(8, 2), default=0)
+    variacao_facebook  = Column(Numeric(8, 2), default=0)
+    variacao_grupos    = Column(Numeric(8, 2), default=0)
+    variacao_vendas    = Column(Numeric(8, 2), default=0)
+    variacao_receita   = Column(Numeric(8, 2), default=0)
+
+    # Criticidade
+    score_criticidade = Column(Numeric(5, 2), default=0)
+    nivel_alerta      = Column(String(10), default="verde", nullable=False)
+
+    farmacia = relationship("Farmacia", back_populates="coletas")
+    canais   = relationship("ColetaCanal", back_populates="coleta", cascade="all, delete")
 
 
 class ColetaCanal(Base):
+    """Breakdown completo de todos os canais coletados."""
     __tablename__ = "coleta_canais"
 
     id           = Column(Integer, primary_key=True)
     coleta_id    = Column(Integer, ForeignKey("coletas.id", ondelete="CASCADE"), nullable=False)
     canal        = Column(String(80), nullable=False)
     atendimentos = Column(Integer, default=0)
-    vendas       = Column(Integer, default=0)
 
     coleta = relationship("Coleta", back_populates="canais")
-
-
-class ColetaConexao(Base):
-    __tablename__ = "coleta_conexoes"
-
-    id           = Column(Integer, primary_key=True)
-    coleta_id    = Column(Integer, ForeignKey("coletas.id", ondelete="CASCADE"), nullable=False)
-    conexao      = Column(String(120), nullable=False)
-    atendimentos = Column(Integer, default=0)
-    vendas       = Column(Integer, default=0)
-
-    coleta = relationship("Coleta", back_populates="conexoes")
 
 
 def init_db():

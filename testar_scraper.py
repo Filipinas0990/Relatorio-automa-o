@@ -1,23 +1,21 @@
 """
-Teste do scraper para UMA farmácia.
-Abre o Chrome visível para você acompanhar o que está sendo coletado.
+Teste do scraper para UMA farmácia com Chrome visível.
 Execute: python testar_scraper.py
 """
-
 import asyncio
 from playwright.async_api import async_playwright
 from farmacia_monitor.scraper.pharmachatbot import (
-    _fazer_login,
-    _aplicar_filtro_datas,
-    _extrair_metricas,
+    _fazer_login, _aplicar_filtro_datas,
+    _extrair_canais_pizza, _extrair_receita,
+    _extrair_vendas_badge, _extrair_total_atendimentos,
+    _mapear_canais,
 )
 from datetime import datetime, timedelta
 
-# ─── CONFIGURE AQUI ──────────────────────────────────────────────────────────
 URL_BASE = "https://app13.pharmachatbot.com.br"
 EMAIL    = "suporte@drogariasaorafael.com"
 SENHA    = "v!g?u7DYNI1Wnvr/T3"
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 async def testar():
     hoje   = datetime.now()
@@ -25,92 +23,63 @@ async def testar():
     fim    = hoje.strftime("%Y-%m-%d")
 
     print(f"\n{'='*55}")
-    print(f"  Teste do Scraper — PharmaChatBot")
-    print(f"  URL    : {URL_BASE}")
+    print(f"  Teste do Scraper")
     print(f"  Periodo: {inicio} ate {fim}")
     print(f"{'='*55}\n")
 
     async with async_playwright() as pw:
-        # headless=False → Chrome visível para você acompanhar
-        browser = await pw.chromium.launch(headless=False, slow_mo=500)
+        browser = await pw.chromium.launch(headless=False, slow_mo=300)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 800},
             locale="pt-BR",
         )
-        page    = await context.new_page()
+        page = await context.new_page()
 
-        print(">> Abrindo login...")
+        print(">> Login...")
         await page.goto(f"{URL_BASE}/", timeout=20000)
-        await page.screenshot(path="debug_01_login.png")
-
-        print(">> Fazendo login...")
-        logado = await _fazer_login(page, EMAIL, SENHA)
-
-        if not logado:
-            await page.screenshot(path="debug_02_erro_login.png")
-            print("\n[ERRO] Login falhou!")
-            print("  Verifique e-mail e senha no topo deste arquivo.")
-            print("  Screenshot salvo: debug_02_erro_login.png")
+        if not await _fazer_login(page, EMAIL, SENHA):
+            print("[ERRO] Login falhou")
             await browser.close()
             return
 
-        print(">> Login OK — aguardando dashboard carregar...")
-        await page.wait_for_timeout(2000)
-        await page.screenshot(path="debug_02_dashboard.png")
-
-        print(f">> Aplicando filtro de datas ({inicio} ate {fim})...")
+        print(">> Aplicando filtro de datas...")
         await _aplicar_filtro_datas(page, inicio, fim)
-        await page.wait_for_timeout(2000)
-        await page.screenshot(path="debug_03_filtro.png")
 
-        # Rola a pagina para revelar todos os elementos da sidebar
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await page.wait_for_timeout(1000)
-        await page.screenshot(path="debug_03b_sidebar_baixo.png")
-        await page.evaluate("window.scrollTo(0, 0)")
-        await page.wait_for_timeout(500)
+        print(">> Extraindo dados...\n")
 
-        # Dump do texto da sidebar direita para descobrir labels exatos
-        sidebar_texto = await page.locator("body").text_content()
-        print("\n--- TEXTO DA SIDEBAR (para debug) ---")
-        linhas = [l.strip() for l in (sidebar_texto or "").split("\n") if l.strip()]
-        # Mostra apenas numeros grandes e seus labels proximos
-        for i, linha in enumerate(linhas):
-            if linha.isdigit() and int(linha) > 50:
-                contexto = linhas[max(0,i-1):i+3]
-                print("  " + " | ".join(contexto))
-        print("-------------------------------------\n")
+        receita, vendas, total_atend = await asyncio.gather(
+            _extrair_receita(page),
+            _extrair_vendas_badge(page),
+            _extrair_total_atendimentos(page),
+        )
 
-        print(">> Extraindo metricas...")
-        metricas = await _extrair_metricas(page)
-        await page.screenshot(path="debug_04_metricas.png")
+        print(">> Lendo grafico de canais (hover nas fatias)...")
+        canais_raw = await _extrair_canais_pizza(
+            page, "Quantidade de atendimentos por canal de divulga"
+        )
+        mapeado = _mapear_canais(canais_raw)
 
         await browser.close()
 
     print(f"\n{'='*55}")
-    print(f"  Resultado da coleta")
+    print(f"  Resultado")
     print(f"{'='*55}")
-    print(f"  Aguardando atendimento   : {metricas['aguardando_atendimento']}")
-    print(f"  Em andamento             : {metricas['em_andamento']}")
-    print(f"  Atendimentos finalizados : {metricas['atendimentos_finalizados']}")
-    print(f"  Total de atendimentos    : {metricas['total_atendimentos']}")
-    print(f"  ---")
-    print(f"  Vendas realizadas        : {metricas['vendas_realizadas']}")
-    print(f"  Vendas nao realizadas    : {metricas['vendas_nao_realizadas']}")
-    print(f"  Receita total            : R$ {metricas['receita_total']:,.2f}")
+    print(f"\n  ORIGEM DOS CLIENTES:")
+    print(f"  Google           : {mapeado['google']}")
+    print(f"  Facebook/Insta   : {mapeado['facebook']}")
+    print(f"  Grupos de Oferta : {mapeado['grupos_oferta']}")
+    print(f"  Total atendimentos: {total_atend}")
+    print(f"\n  VENDAS:")
+    print(f"  Vendas realizadas: {vendas}")
+    print(f"  Faturamento total: R$ {receita:,.2f}")
 
-    badges_principais = [
-        metricas['atendimentos_finalizados'],
-        metricas['total_atendimentos'],
-    ]
-    zeros = sum(1 for v in badges_principais if v == 0)
+    print(f"\n  TODOS OS CANAIS COLETADOS:")
+    for canal, total in sorted(canais_raw.items(), key=lambda x: -x[1]):
+        print(f"    {canal:35} {total}")
+
+    ok = mapeado["google"] > 0 or mapeado["facebook"] > 0 or mapeado["grupos_oferta"] > 0
     print(f"\n{'='*55}")
-    if zeros == 2:
-        print("  [ATENCAO] Badges principais zerados — verifique os seletores")
-    elif zeros > 0:
-        print(f"  [PARCIAL] Alguns badges nao coletados")
-    else:
-        print("  [SUCESSO] Todas as metricas coletadas corretamente!")
+    print(f"  {'[SUCESSO]' if ok else '[ATENCAO] Canais zerados — hover nao funcionou'}")
     print(f"{'='*55}\n")
 
 
