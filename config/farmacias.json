@@ -1,0 +1,19 @@
+[
+  {
+    "id": 1,
+    "nome": "Drogaria São Rafael",
+    "url_base": "https://app13.pharmachatbot.com.br",
+    "email": "suporte@drogariasaorafael.com",
+    "senha": "v!g?u7DYNI1Wnvr/T3",
+
+    "ativa": true
+  },
+  {
+    "id": 2,
+    "nome": "Farmácia Exemplo 2",
+    "url_base": "https://app13.pharmachatbot.com.br",
+    "email": "email@farmacia2.com",
+    "senha": "SENHA_AQUI",
+    "ativa": true
+  }
+]

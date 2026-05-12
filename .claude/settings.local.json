@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python --version)",
+      "PowerShell(pip --version)",
+      "PowerShell(pip install playwright sqlalchemy fastapi uvicorn python-dotenv aiofiles httpx --quiet 2>&1)",
+      "PowerShell(python -m pip install playwright sqlalchemy fastapi uvicorn python-dotenv aiofiles httpx 2>&1)",
+      "PowerShell(python -m pip install pandas --pre 2>&1)",
+      "PowerShell(python -m playwright install chromium 2>&1)",
+      "PowerShell(Get-Process \"Docker Desktop\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Start-Process \"C:\\\\Program Files\\\\Docker\\\\Docker\\\\Docker Desktop.exe\")",
+      "PowerShell(Get-ChildItem -Recurse \"C:\\\\Users\\\\Grupo Symbol Digital\\\\Desktop\\\\AUTOMAÇÂO\" -File | Where-Object { $_.FullName -notmatch \"node_modules|__pycache__|\\\\.git\" } | Select-Object FullName | Sort-Object FullName)",
+      "PowerShell(Get-ChildItem -Recurse \"C:\\\\Users\\\\Grupo Symbol Digital\\\\Desktop\\\\AUTOMAÇÂO\" | Where-Object { -not $_.PSIsContainer } | ForEach-Object { $_.FullName.Replace\\(\"C:\\\\Users\\\\Grupo Symbol Digital\\\\Desktop\\\\AUTOMAÇÂO\\\\\", \"\"\\) } | Sort-Object)",
+      "PowerShell(python -m pip install openpyxl --quiet 2>&1)",
+      "PowerShell(Get-ChildItem -Recurse \"C:\\\\Users\\\\Grupo Symbol Digital\\\\Desktop\\\\AUTOMAÇÂO\" | Where-Object { -not $_.PSIsContainer -and $_.FullName -notmatch \"\\\\.claude|__pycache__\" } | ForEach-Object { $_.FullName.Replace\\(\"C:\\\\Users\\\\Grupo Symbol Digital\\\\Desktop\\\\AUTOMAÇÂO\\\\\", \"\"\\) } | Sort-Object)"
+    ]
+  }
+}
