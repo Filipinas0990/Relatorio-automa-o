@@ -1,6 +1,6 @@
 from sqlalchemy import (
     create_engine, Column, Integer, String, Numeric,
-    Boolean, DateTime, Date, ForeignKey, CheckConstraint
+    Boolean, DateTime, Date, ForeignKey, Text, CheckConstraint
 )
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, relationship
 from datetime import datetime
@@ -19,6 +19,20 @@ class Base(DeclarativeBase):
     pass
 
 
+class GestorTrafego(Base):
+    __tablename__ = "gestores_trafego"
+
+    id         = Column(Integer, primary_key=True)
+    nome       = Column(String(120), nullable=False)
+    email      = Column(String(120), unique=True, nullable=False)
+    senha_hash = Column(String(255), nullable=False)
+    is_admin   = Column(Boolean, default=False, nullable=False)
+    ativo      = Column(Boolean, default=True)
+    criado_em  = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    farmacias  = relationship("Farmacia", back_populates="gestor")
+
+
 class Farmacia(Base):
     __tablename__ = "farmacias"
 
@@ -26,9 +40,12 @@ class Farmacia(Base):
     nome      = Column(String(120), nullable=False)
     url_base  = Column(String(255), nullable=False)
     email     = Column(String(120), nullable=False)
+    senha_enc = Column(Text, nullable=True)
+    gestor_id = Column(Integer, ForeignKey("gestores_trafego.id", ondelete="SET NULL"), nullable=True)
     ativa     = Column(Boolean, default=True)
     criado_em = Column(DateTime(timezone=True), default=datetime.utcnow)
 
+    gestor  = relationship("GestorTrafego", back_populates="farmacias")
     coletas = relationship("Coleta", back_populates="farmacia", cascade="all, delete")
 
 
@@ -47,24 +64,20 @@ class Coleta(Base):
     periodo_inicio = Column(Date, nullable=False)
     periodo_fim    = Column(Date, nullable=False)
 
-    # Origem dos clientes
     clientes_google        = Column(Integer, default=0)
     clientes_facebook      = Column(Integer, default=0)
     clientes_grupos_oferta = Column(Integer, default=0)
     total_atendimentos     = Column(Integer, default=0)
 
-    # Vendas
     vendas_realizadas = Column(Integer, default=0)
     receita_total     = Column(Numeric(12, 2), default=0)
 
-    # Variações vs semana anterior (%)
     variacao_google    = Column(Numeric(8, 2), default=0)
     variacao_facebook  = Column(Numeric(8, 2), default=0)
     variacao_grupos    = Column(Numeric(8, 2), default=0)
     variacao_vendas    = Column(Numeric(8, 2), default=0)
     variacao_receita   = Column(Numeric(8, 2), default=0)
 
-    # Criticidade
     score_criticidade = Column(Numeric(5, 2), default=0)
     nivel_alerta      = Column(String(10), default="verde", nullable=False)
 
@@ -73,7 +86,6 @@ class Coleta(Base):
 
 
 class ColetaCanal(Base):
-    """Breakdown completo de todos os canais coletados."""
     __tablename__ = "coleta_canais"
 
     id           = Column(Integer, primary_key=True)

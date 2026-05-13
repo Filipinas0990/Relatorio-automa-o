@@ -1,22 +1,39 @@
 """
-API FastAPI — serve os dados do PostgreSQL para o frontend (PharmaFlow).
-Endpoints consumidos pelas telas: Painel Geral, Farmácias, Relatórios.
+API FastAPI — PharmaFlow Backend v2
+- Super Admin: acesso total, criado via ADMIN_SECRET do .env
+- Gestores: acesso apenas às suas próprias farmácias
 """
 
 import io
+import os
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from pydantic import BaseModel
 
-from farmacia_monitor.database.db import get_db, Farmacia, Coleta
+from farmacia_monitor.database.db import (
+    get_db, SessionLocal, GestorTrafego, Farmacia, Coleta
+)
 
-app = FastAPI(title="PharmaFlow API", version="1.0.0")
+# ── Config ────────────────────────────────────────────────────────────────────
+
+SECRET_KEY         = os.getenv("JWT_SECRET_KEY", "troque-no-env-do-servidor")
+ALGORITHM          = "HS256"
+TOKEN_EXPIRE_HORAS = 8
+
+pwd_context   = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+app = FastAPI(title="PharmaFlow API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,30 +43,316 @@ app.add_middleware(
 )
 
 
-# ── Painel Geral ─────────────────────────────────────────────────────────────
+# ── JWT Helpers ───────────────────────────────────────────────────────────────
+
+def _criar_token(gestor_id: int, nome: str, is_admin: bool) -> str:
+    payload = {
+        "sub":      str(gestor_id),
+        "nome":     nome,
+        "is_admin": is_admin,
+        "exp":      datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HORAS),
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> GestorTrafego:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        gestor_id = payload.get("sub")
+        if not gestor_id:
+            raise HTTPException(status_code=401, detail="Token invalido")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token invalido ou expirado")
+
+    gestor = db.query(GestorTrafego).filter(
+        GestorTrafego.id == int(gestor_id),
+        GestorTrafego.ativo == True,
+    ).first()
+    if not gestor:
+        raise HTTPException(status_code=401, detail="Usuario nao encontrado")
+    return gestor
+
+
+def admin_required(current_user: GestorTrafego = Depends(get_current_user)) -> GestorTrafego:
+    """Dependência: bloqueia acesso se não for super admin."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Acesso restrito ao administrador")
+    return current_user
+
+
+# ── Pydantic Schemas ──────────────────────────────────────────────────────────
+
+class SuperAdminCreate(BaseModel):
+    nome:         str
+    email:        str
+    senha:        str
+    admin_secret: str   # deve bater com ADMIN_SECRET do .env
+
+class GestorCreate(BaseModel):
+    nome:  str
+    email: str
+    senha: str
+
+class GestorUpdate(BaseModel):
+    nome:  Optional[str] = None
+    email: Optional[str] = None
+    senha: Optional[str] = None
+
+class FarmaciaCreate(BaseModel):
+    nome:      str
+    url_base:  str
+    email:     str
+    senha:     str
+    gestor_id: Optional[int] = None
+
+class FarmaciaUpdate(BaseModel):
+    nome:      Optional[str]  = None
+    url_base:  Optional[str]  = None
+    email:     Optional[str]  = None
+    senha:     Optional[str]  = None
+    gestor_id: Optional[int]  = None
+    ativa:     Optional[bool] = None
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+@app.post("/api/auth/criar-super-admin", status_code=201)
+def criar_super_admin(dados: SuperAdminCreate, db: Session = Depends(get_db)):
+    """
+    Cria o primeiro super admin. Requer ADMIN_SECRET do .env.
+    Bloqueado permanentemente após o primeiro admin ser criado.
+    """
+    secret_env = os.getenv("ADMIN_SECRET", "")
+    if not secret_env:
+        raise HTTPException(status_code=503, detail="ADMIN_SECRET nao configurado no servidor")
+    if dados.admin_secret != secret_env:
+        raise HTTPException(status_code=403, detail="Segredo invalido")
+
+    ja_existe = db.query(GestorTrafego).filter(GestorTrafego.is_admin == True).first()
+    if ja_existe:
+        raise HTTPException(status_code=409, detail="Super admin ja existe. Use o login normal.")
+
+    email_existe = db.query(GestorTrafego).filter(GestorTrafego.email == dados.email).first()
+    if email_existe:
+        raise HTTPException(status_code=409, detail="Email ja cadastrado")
+
+    admin = GestorTrafego(
+        nome=dados.nome,
+        email=dados.email,
+        senha_hash=pwd_context.hash(dados.senha),
+        is_admin=True,
+    )
+    db.add(admin)
+    db.commit()
+    db.refresh(admin)
+    return {"id": admin.id, "nome": admin.nome, "email": admin.email, "is_admin": True}
+
+
+@app.post("/api/auth/login")
+def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    gestor = db.query(GestorTrafego).filter(GestorTrafego.email == form.username).first()
+    if not gestor or not pwd_context.verify(form.password, gestor.senha_hash):
+        raise HTTPException(status_code=401, detail="Email ou senha incorretos")
+    if not gestor.ativo:
+        raise HTTPException(status_code=403, detail="Usuario inativo")
+
+    return {
+        "access_token": _criar_token(gestor.id, gestor.nome, gestor.is_admin),
+        "token_type":   "bearer",
+        "id":           gestor.id,
+        "nome":         gestor.nome,
+        "email":        gestor.email,
+        "is_admin":     gestor.is_admin,
+    }
+
+
+@app.get("/api/auth/me")
+def get_me(current_user: GestorTrafego = Depends(get_current_user)):
+    return {
+        "id":       current_user.id,
+        "nome":     current_user.nome,
+        "email":    current_user.email,
+        "is_admin": current_user.is_admin,
+    }
+
+
+# ── Gestores CRUD (somente admin) ─────────────────────────────────────────────
+
+@app.get("/api/gestores")
+def get_gestores(
+    db: Session = Depends(get_db),
+    _: GestorTrafego = Depends(get_current_user),   # qualquer logado pode listar
+):
+    gestores = db.query(GestorTrafego).filter(GestorTrafego.ativo == True).all()
+    return [
+        {
+            "id":        g.id,
+            "nome":      g.nome,
+            "email":     g.email,
+            "is_admin":  g.is_admin,
+            "criado_em": g.criado_em,
+            "farmacias": len([f for f in g.farmacias if f.ativa]),
+        }
+        for g in gestores
+    ]
+
+
+@app.post("/api/gestores", status_code=201)
+def criar_gestor(
+    dados: GestorCreate,
+    db: Session = Depends(get_db),
+    _: GestorTrafego = Depends(admin_required),   # somente admin
+):
+    existe = db.query(GestorTrafego).filter(GestorTrafego.email == dados.email).first()
+    if existe:
+        raise HTTPException(status_code=409, detail="Email ja cadastrado")
+
+    gestor = GestorTrafego(
+        nome=dados.nome,
+        email=dados.email,
+        senha_hash=pwd_context.hash(dados.senha),
+        is_admin=False,
+    )
+    db.add(gestor)
+    db.commit()
+    db.refresh(gestor)
+    return {"id": gestor.id, "nome": gestor.nome, "email": gestor.email}
+
+
+@app.put("/api/gestores/{gestor_id}")
+def atualizar_gestor(
+    gestor_id: int,
+    dados: GestorUpdate,
+    db: Session = Depends(get_db),
+    _: GestorTrafego = Depends(admin_required),
+):
+    gestor = db.query(GestorTrafego).filter(GestorTrafego.id == gestor_id).first()
+    if not gestor:
+        raise HTTPException(status_code=404, detail="Gestor nao encontrado")
+
+    if dados.nome  is not None: gestor.nome  = dados.nome
+    if dados.email is not None: gestor.email = dados.email
+    if dados.senha:             gestor.senha_hash = pwd_context.hash(dados.senha)
+
+    db.commit()
+    return {"id": gestor.id, "nome": gestor.nome, "email": gestor.email}
+
+
+@app.delete("/api/gestores/{gestor_id}")
+def deletar_gestor(
+    gestor_id: int,
+    db: Session = Depends(get_db),
+    current_user: GestorTrafego = Depends(admin_required),
+):
+    if gestor_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Nao e possivel deletar seu proprio usuario")
+
+    gestor = db.query(GestorTrafego).filter(GestorTrafego.id == gestor_id).first()
+    if not gestor:
+        raise HTTPException(status_code=404, detail="Gestor nao encontrado")
+
+    gestor.ativo = False
+    db.commit()
+    return {"mensagem": "Gestor desativado"}
+
+
+# ── Farmácias CRUD ────────────────────────────────────────────────────────────
+
+@app.post("/api/farmacias", status_code=201)
+def criar_farmacia(
+    dados: FarmaciaCreate,
+    db: Session = Depends(get_db),
+    _: GestorTrafego = Depends(admin_required),
+):
+    from farmacia_monitor.cripto import _fernet
+    farmacia = Farmacia(
+        nome=dados.nome,
+        url_base=dados.url_base,
+        email=dados.email,
+        senha_enc=_fernet().encrypt(dados.senha.encode()).decode(),
+        gestor_id=dados.gestor_id,
+    )
+    db.add(farmacia)
+    db.commit()
+    db.refresh(farmacia)
+    return {"id": farmacia.id, "nome": farmacia.nome, "gestor_id": farmacia.gestor_id}
+
+
+@app.put("/api/farmacias/{farmacia_id}")
+def atualizar_farmacia(
+    farmacia_id: int,
+    dados: FarmaciaUpdate,
+    db: Session = Depends(get_db),
+    _: GestorTrafego = Depends(admin_required),
+):
+    farmacia = db.query(Farmacia).filter(Farmacia.id == farmacia_id).first()
+    if not farmacia:
+        raise HTTPException(status_code=404, detail="Farmacia nao encontrada")
+
+    if dados.nome      is not None: farmacia.nome      = dados.nome
+    if dados.url_base  is not None: farmacia.url_base  = dados.url_base
+    if dados.email     is not None: farmacia.email     = dados.email
+    if dados.gestor_id is not None: farmacia.gestor_id = dados.gestor_id
+    if dados.ativa     is not None: farmacia.ativa     = dados.ativa
+    if dados.senha:
+        from farmacia_monitor.cripto import _fernet
+        farmacia.senha_enc = _fernet().encrypt(dados.senha.encode()).decode()
+
+    db.commit()
+    return {"id": farmacia.id, "nome": farmacia.nome, "ativa": farmacia.ativa}
+
+
+@app.delete("/api/farmacias/{farmacia_id}")
+def deletar_farmacia(
+    farmacia_id: int,
+    db: Session = Depends(get_db),
+    _: GestorTrafego = Depends(admin_required),
+):
+    farmacia = db.query(Farmacia).filter(Farmacia.id == farmacia_id).first()
+    if not farmacia:
+        raise HTTPException(status_code=404, detail="Farmacia nao encontrada")
+
+    farmacia.ativa = False
+    db.commit()
+    return {"mensagem": "Farmacia desativada"}
+
+
+# ── Painel Geral ──────────────────────────────────────────────────────────────
 
 @app.get("/api/painel")
-def get_painel(db: Session = Depends(get_db)):
-    rows = db.execute(text("SELECT * FROM vw_ranking_atual")).mappings().all()
+def get_painel(
+    gestor_id: Optional[int] = None,
+    current_user: GestorTrafego = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Gestor comum vê apenas suas farmácias, independente do que vier na query
+    filtro = gestor_id if current_user.is_admin else current_user.id
+
+    if filtro:
+        rows = db.execute(text("""
+            SELECT r.* FROM vw_ranking_atual r
+            JOIN farmacias f ON f.id = r.farmacia_id
+            WHERE f.gestor_id = :gid
+        """), {"gid": filtro}).mappings().all()
+    else:
+        rows = db.execute(text("SELECT * FROM vw_ranking_atual")).mappings().all()
 
     if not rows:
         return {
-            "receita_total": 0,
-            "total_atendimentos": 0,
-            "vendas_realizadas": 0,
-            "farmacias_ativas": 0,
-            "farmacias_alerta": 0,
-            "farmacias_atencao": 0,
-            "taxa_conversao_media": 0,
-            "ultima_atualizacao": None,
+            "receita_total": 0, "total_atendimentos": 0, "vendas_realizadas": 0,
+            "farmacias_ativas": 0, "farmacias_alerta": 0, "farmacias_atencao": 0,
+            "taxa_conversao_media": 0, "ultima_atualizacao": None,
         }
 
-    receita_total       = sum(float(r["receita_total"] or 0) for r in rows)
-    total_atendimentos  = sum(int(r["total_atendimentos"] or 0) for r in rows)
-    vendas_realizadas   = sum(int(r["vendas_realizadas"] or 0) for r in rows)
-    conversoes          = [float(r["taxa_conversao"] or 0) for r in rows]
-    taxa_media          = round(sum(conversoes) / len(conversoes), 2) if conversoes else 0
-    ultima_atualizacao  = max((r["data_coleta"] for r in rows), default=None)
+    receita_total      = sum(float(r["receita_total"] or 0) for r in rows)
+    total_atendimentos = sum(int(r["total_atendimentos"] or 0) for r in rows)
+    vendas_realizadas  = sum(int(r["vendas_realizadas"] or 0) for r in rows)
+    conversoes         = [float(r["taxa_conversao"] or 0) for r in rows]
+    taxa_media         = round(sum(conversoes) / len(conversoes), 2) if conversoes else 0
+    ultima_atualizacao = max((r["data_coleta"] for r in rows), default=None)
 
     return {
         "receita_total":        round(receita_total, 2),
@@ -63,69 +366,95 @@ def get_painel(db: Session = Depends(get_db)):
     }
 
 
-# ── Farmácias ─────────────────────────────────────────────────────────────────
+# ── Farmácias (listagem + evolução) ───────────────────────────────────────────
 
 @app.get("/api/farmacias")
 def get_farmacias(
-    status: Optional[str] = None,
-    busca:  Optional[str] = None,
+    status:    Optional[str] = None,
+    busca:     Optional[str] = None,
+    gestor_id: Optional[int] = None,
+    current_user: GestorTrafego = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    rows = db.execute(text("SELECT * FROM vw_ranking_atual ORDER BY posicao_ranking")).mappings().all()
+    # Gestor comum: forçar filtro pelo seu próprio ID
+    filtro = gestor_id if current_user.is_admin else current_user.id
+
+    if filtro:
+        rows = db.execute(text("""
+            SELECT r.*, f.gestor_id FROM vw_ranking_atual r
+            JOIN farmacias f ON f.id = r.farmacia_id
+            WHERE f.gestor_id = :gid
+            ORDER BY r.posicao_ranking
+        """), {"gid": filtro}).mappings().all()
+    else:
+        rows = db.execute(
+            text("SELECT * FROM vw_ranking_atual ORDER BY posicao_ranking")
+        ).mappings().all()
 
     resultado = []
     for r in rows:
-        # Mapeia nivel_alerta → label de status do frontend
-        label_status = {"verde": "Ativa", "amarelo": "Atenção", "vermelho": "Alerta"}.get(
+        label_status = {"verde": "Ativa", "amarelo": "Atencao", "vermelho": "Alerta"}.get(
             r["nivel_alerta"], "Ativa"
         )
-
         if status and label_status.lower() != status.lower():
             continue
         if busca and busca.lower() not in r["farmacia"].lower():
             continue
 
         resultado.append({
-            "id":                      r["farmacia_id"],
-            "nome":                    r["farmacia"],
-            "status":                  label_status,
-            "nivel_alerta":            r["nivel_alerta"],
-            "receita_total":           float(r["receita_total"] or 0),
-            "total_atendimentos":      int(r["total_atendimentos"] or 0),
-            "atendimentos_finalizados":int(r["atendimentos_finalizados"] or 0),
-            "vendas_realizadas":       int(r["vendas_realizadas"] or 0),
-            "taxa_conversao":          float(r["taxa_conversao"] or 0),
-            "variacao_receita":        float(r["variacao_receita"] or 0),
-            "variacao_atendimentos":   float(r["variacao_atendimentos"] or 0),
-            "variacao_vendas":         float(r["variacao_vendas"] or 0),
-            "score_criticidade":       float(r["score_criticidade"] or 0),
-            "posicao_ranking":         int(r["posicao_ranking"]),
-            "periodo_inicio":          str(r["periodo_inicio"]),
-            "periodo_fim":             str(r["periodo_fim"]),
-            "data_coleta":             r["data_coleta"],
+            "id":                       r["farmacia_id"],
+            "nome":                     r["farmacia"],
+            "status":                   label_status,
+            "nivel_alerta":             r["nivel_alerta"],
+            "gestor_id":                r.get("gestor_id"),
+            "receita_total":            float(r["receita_total"] or 0),
+            "total_atendimentos":       int(r["total_atendimentos"] or 0),
+            "atendimentos_finalizados": int(r.get("atendimentos_finalizados") or 0),
+            "vendas_realizadas":        int(r["vendas_realizadas"] or 0),
+            "taxa_conversao":           float(r.get("taxa_conversao") or 0),
+            "variacao_receita":         float(r.get("variacao_receita") or 0),
+            "variacao_atendimentos":    float(r.get("variacao_atendimentos") or 0),
+            "variacao_vendas":          float(r.get("variacao_vendas") or 0),
+            "score_criticidade":        float(r["score_criticidade"] or 0),
+            "posicao_ranking":          int(r["posicao_ranking"]),
+            "periodo_inicio":           str(r["periodo_inicio"]),
+            "periodo_fim":              str(r["periodo_fim"]),
+            "data_coleta":              r["data_coleta"],
         })
 
     return resultado
 
 
 @app.get("/api/farmacias/{farmacia_id}/evolucao")
-def get_evolucao(farmacia_id: int, db: Session = Depends(get_db)):
-    rows = db.execute(
-        text("""
-            SELECT * FROM vw_evolucao_semanal
-            WHERE farmacia_id = :fid
-            ORDER BY semana_numero ASC
-        """),
-        {"fid": farmacia_id},
-    ).mappings().all()
+def get_evolucao(
+    farmacia_id: int,
+    current_user: GestorTrafego = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Gestor só pode ver evolução das suas próprias farmácias
+    if not current_user.is_admin:
+        farmacia = db.query(Farmacia).filter(
+            Farmacia.id == farmacia_id,
+            Farmacia.gestor_id == current_user.id,
+        ).first()
+        if not farmacia:
+            raise HTTPException(status_code=403, detail="Acesso negado a esta farmacia")
 
+    rows = db.execute(text("""
+        SELECT * FROM vw_evolucao_semanal
+        WHERE farmacia_id = :fid
+        ORDER BY semana_numero ASC
+    """), {"fid": farmacia_id}).mappings().all()
     return [dict(r) for r in rows]
 
 
-# ── Relatórios / Histórico de Execuções ───────────────────────────────────────
+# ── Relatórios ────────────────────────────────────────────────────────────────
 
 @app.get("/api/relatorios")
-def get_relatorios(db: Session = Depends(get_db)):
+def get_relatorios(
+    _: GestorTrafego = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     rows = db.execute(text("""
         SELECT
             DATE_TRUNC('week', data_coleta)::DATE  AS periodo_inicio,
@@ -141,41 +470,36 @@ def get_relatorios(db: Session = Depends(get_db)):
 
     resultado = []
     for i, r in enumerate(rows):
-        total     = int(r["farmacias"] or 0)
+        total      = int(r["farmacias"] or 0)
         concluidas = int(r["concluidas"] or total)
-        status    = "Concluído" if concluidas == total else "Parcial" if concluidas > 0 else "Erro"
-
-        inicio = r["periodo_inicio"]
-        fim    = r["periodo_fim"]
-        label  = f"Semana {len(rows) - i} — {_fmt_data(inicio)} a {_fmt_data(fim)}"
-
+        status     = "Concluido" if concluidas == total else "Parcial" if concluidas > 0 else "Erro"
+        inicio     = r["periodo_inicio"]
+        fim        = r["periodo_fim"]
         resultado.append({
-            "id":            i + 1,
-            "label":         label,
+            "id":             i + 1,
+            "label":          f"Semana {len(rows) - i} — {_fmt_data(inicio)} a {_fmt_data(fim)}",
             "periodo_inicio": str(inicio),
             "periodo_fim":    str(fim),
             "data_geracao":   r["data_geracao"],
             "farmacias":      f"{total}/70",
             "status":         status,
         })
-
     return resultado
 
 
 @app.get("/api/relatorios/{periodo_inicio}/xlsx")
-def download_xlsx(periodo_inicio: str, db: Session = Depends(get_db)):
+def download_xlsx(
+    periodo_inicio: str,
+    _: GestorTrafego = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment
 
     rows = db.execute(text("""
-        SELECT
-            f.nome,
-            c.periodo_inicio, c.periodo_fim,
-            c.receita_total, c.total_atendimentos,
-            c.atendimentos_finalizados, c.vendas_realizadas,
-            c.taxa_conversao, c.variacao_receita,
-            c.variacao_atendimentos, c.variacao_vendas,
-            c.score_criticidade, c.nivel_alerta
+        SELECT f.nome, c.periodo_inicio, c.periodo_fim,
+               c.receita_total, c.total_atendimentos,
+               c.vendas_realizadas, c.score_criticidade, c.nivel_alerta
         FROM coletas c
         JOIN farmacias f ON f.id = c.farmacia_id
         WHERE c.periodo_inicio::TEXT = :periodo
@@ -183,73 +507,54 @@ def download_xlsx(periodo_inicio: str, db: Session = Depends(get_db)):
     """), {"periodo": periodo_inicio}).mappings().all()
 
     if not rows:
-        raise HTTPException(status_code=404, detail="Período não encontrado")
+        raise HTTPException(status_code=404, detail="Periodo nao encontrado")
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Relatório Semanal"
-
-    cabecalho = [
-        "Farmácia", "Período Início", "Período Fim",
-        "Receita Total (R$)", "Total Atendimentos", "Atend. Finalizados",
-        "Vendas Realizadas", "Taxa Conversão (%)", "Variação Receita (%)",
-        "Variação Atendimentos (%)", "Variação Vendas (%)",
-        "Score Criticidade", "Nível Alerta",
-    ]
-
+    ws.title = "Relatorio Semanal"
+    cabecalho = ["Farmacia", "Periodo Inicio", "Periodo Fim",
+                 "Receita (R$)", "Atendimentos", "Vendas", "Score", "Alerta"]
     header_fill = PatternFill("solid", fgColor="1A7A4A")
     header_font = Font(bold=True, color="FFFFFF")
-
     for col, titulo in enumerate(cabecalho, 1):
         cell = ws.cell(row=1, column=col, value=titulo)
-        cell.fill   = header_fill
-        cell.font   = header_font
+        cell.fill = header_fill
+        cell.font = header_font
         cell.alignment = Alignment(horizontal="center")
         ws.column_dimensions[cell.column_letter].width = max(len(titulo) + 4, 18)
 
-    cores_alerta = {"verde": "C6EFCE", "amarelo": "FFEB9C", "vermelho": "FFC7CE"}
-
+    cores = {"verde": "C6EFCE", "amarelo": "FFEB9C", "vermelho": "FFC7CE"}
     for linha, r in enumerate(rows, 2):
-        valores = [
-            r["nome"], str(r["periodo_inicio"]), str(r["periodo_fim"]),
-            float(r["receita_total"] or 0),
-            int(r["total_atendimentos"] or 0),
-            int(r["atendimentos_finalizados"] or 0),
-            int(r["vendas_realizadas"] or 0),
-            float(r["taxa_conversao"] or 0),
-            float(r["variacao_receita"] or 0),
-            float(r["variacao_atendimentos"] or 0),
-            float(r["variacao_vendas"] or 0),
-            float(r["score_criticidade"] or 0),
-            r["nivel_alerta"],
-        ]
-        cor = cores_alerta.get(r["nivel_alerta"], "FFFFFF")
-        fill = PatternFill("solid", fgColor=cor)
+        valores = [r["nome"], str(r["periodo_inicio"]), str(r["periodo_fim"]),
+                   float(r["receita_total"] or 0), int(r["total_atendimentos"] or 0),
+                   int(r["vendas_realizadas"] or 0),
+                   float(r["score_criticidade"] or 0), r["nivel_alerta"]]
+        fill = PatternFill("solid", fgColor=cores.get(r["nivel_alerta"], "FFFFFF"))
         for col, val in enumerate(valores, 1):
-            cell = ws.cell(row=linha, column=col, value=val)
-            cell.fill = fill
+            ws.cell(row=linha, column=col, value=val).fill = fill
 
     buffer = io.BytesIO()
     wb.save(buffer)
     buffer.seek(0)
-
-    nome_arquivo = f"relatorio_{periodo_inicio}.xlsx"
     return StreamingResponse(
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={nome_arquivo}"},
+        headers={"Content-Disposition": f"attachment; filename=relatorio_{periodo_inicio}.xlsx"},
     )
 
 
-# ── Execução manual ("Rodar Agora") ───────────────────────────────────────────
+# ── Pipeline manual ───────────────────────────────────────────────────────────
 
 _pipeline_rodando = False
 
 @app.post("/api/rodar-agora")
-async def rodar_agora(background_tasks: BackgroundTasks):
+async def rodar_agora(
+    background_tasks: BackgroundTasks,
+    _: GestorTrafego = Depends(admin_required),
+):
     global _pipeline_rodando
     if _pipeline_rodando:
-        return {"status": "ja_rodando", "mensagem": "Pipeline já está em execução"}
+        return {"status": "ja_rodando", "mensagem": "Pipeline ja esta em execucao"}
 
     async def _executar():
         global _pipeline_rodando
@@ -266,17 +571,12 @@ async def rodar_agora(background_tasks: BackgroundTasks):
 
 @app.get("/api/status")
 def get_status():
-    return {
-        "pipeline_rodando": _pipeline_rodando,
-        "timestamp": datetime.utcnow().isoformat(),
-    }
+    return {"pipeline_rodando": _pipeline_rodando, "timestamp": datetime.utcnow().isoformat()}
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helper ────────────────────────────────────────────────────────────────────
 
 def _fmt_data(d) -> str:
-    if not d:
-        return ""
-    if hasattr(d, "strftime"):
-        return d.strftime("%d %b")
+    if not d: return ""
+    if hasattr(d, "strftime"): return d.strftime("%d %b")
     return str(d)

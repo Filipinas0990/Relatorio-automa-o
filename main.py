@@ -16,11 +16,41 @@ from farmacia_monitor.processor.score import calcular_score, MetricasSemana
 from farmacia_monitor.database.db import (
     init_db, SessionLocal, Farmacia, Coleta, ColetaCanal
 )
-from farmacia_monitor.cripto import carregar_farmacias as _carregar_farmacias
+from farmacia_monitor.cripto import carregar_farmacias as _carregar_enc
 
 
 def carregar_farmacias() -> list[dict]:
-    return _carregar_farmacias(os.path.dirname(__file__))
+    """Le farmacias do banco (senha descriptografada). Fallback para .enc."""
+    try:
+        from farmacia_monitor.cripto import _fernet
+        db = SessionLocal()
+        try:
+            farmacias = db.query(Farmacia).filter(
+                Farmacia.ativa == True,
+                Farmacia.senha_enc.isnot(None),
+            ).all()
+            if farmacias:
+                resultado = []
+                for f in farmacias:
+                    try:
+                        senha = _fernet().decrypt(f.senha_enc.encode()).decode()
+                    except Exception:
+                        senha = ""
+                    resultado.append({
+                        "nome":  f.nome,
+                        "url":   f.url_base,
+                        "email": f.email,
+                        "senha": senha,
+                        "ativa": f.ativa,
+                    })
+                return resultado
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    # Fallback: le do arquivo criptografado (antes da migracao)
+    return _carregar_enc(os.path.dirname(__file__))
 
 
 def _coleta_anterior(db, farmacia_id: int) -> Coleta | None:
