@@ -17,7 +17,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
 from pydantic import BaseModel
 
 from farmacia_monitor.database.db import (
@@ -30,7 +30,11 @@ SECRET_KEY         = os.getenv("JWT_SECRET_KEY", "troque-no-env-do-servidor")
 ALGORITHM          = "HS256"
 TOKEN_EXPIRE_HORAS = 8
 
-pwd_context   = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def _hash_senha(senha: str) -> str:
+    return _bcrypt.hashpw(senha.encode(), _bcrypt.gensalt()).decode()
+
+def _verificar_senha(senha: str, hashed: str) -> bool:
+    return _bcrypt.checkpw(senha.encode(), hashed.encode())
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 app = FastAPI(title="PharmaFlow API", version="2.0.0")
@@ -142,7 +146,7 @@ def criar_super_admin(dados: SuperAdminCreate, db: Session = Depends(get_db)):
     admin = GestorTrafego(
         nome=dados.nome,
         email=dados.email,
-        senha_hash=pwd_context.hash(dados.senha),
+        senha_hash=_hash_senha(dados.senha),
         is_admin=True,
     )
     db.add(admin)
@@ -154,7 +158,7 @@ def criar_super_admin(dados: SuperAdminCreate, db: Session = Depends(get_db)):
 @app.post("/api/auth/login")
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     gestor = db.query(GestorTrafego).filter(GestorTrafego.email == form.username).first()
-    if not gestor or not pwd_context.verify(form.password, gestor.senha_hash):
+    if not gestor or not _verificar_senha(form.password, gestor.senha_hash):
         raise HTTPException(status_code=401, detail="Email ou senha incorretos")
     if not gestor.ativo:
         raise HTTPException(status_code=403, detail="Usuario inativo")
@@ -213,7 +217,7 @@ def criar_gestor(
     gestor = GestorTrafego(
         nome=dados.nome,
         email=dados.email,
-        senha_hash=pwd_context.hash(dados.senha),
+        senha_hash=_hash_senha(dados.senha),
         is_admin=False,
     )
     db.add(gestor)
@@ -235,7 +239,7 @@ def atualizar_gestor(
 
     if dados.nome  is not None: gestor.nome  = dados.nome
     if dados.email is not None: gestor.email = dados.email
-    if dados.senha:             gestor.senha_hash = pwd_context.hash(dados.senha)
+    if dados.senha:             gestor.senha_hash = _hash_senha(dados.senha)
 
     db.commit()
     return {"id": gestor.id, "nome": gestor.nome, "email": gestor.email}

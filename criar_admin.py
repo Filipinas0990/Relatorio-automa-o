@@ -14,9 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from farmacia_monitor.database.db import init_db, SessionLocal, GestorTrafego
-from passlib.context import CryptContext
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+import bcrypt as _bcrypt
 
 
 def criar_admin():
@@ -41,7 +39,7 @@ def criar_admin():
         admin = GestorTrafego(
             nome=nome,
             email=email,
-            senha_hash=pwd_context.hash(senha),
+            senha_hash=_bcrypt.hashpw(senha.encode(), _bcrypt.gensalt()).decode(),
             is_admin=True,
         )
         db.add(admin)
