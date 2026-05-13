@@ -16,13 +16,11 @@ from farmacia_monitor.processor.score import calcular_score, MetricasSemana
 from farmacia_monitor.database.db import (
     init_db, SessionLocal, Farmacia, Coleta, ColetaCanal
 )
+from farmacia_monitor.cripto import carregar_farmacias as _carregar_farmacias
 
 
 def carregar_farmacias() -> list[dict]:
-    caminho = os.path.join(os.path.dirname(__file__), "config", "farmacias.json")
-    with open(caminho, encoding="utf-8") as f:
-        todas = json.load(f)
-    return [fa for fa in todas if fa.get("ativa", True)]
+    return _carregar_farmacias(os.path.dirname(__file__))
 
 
 def _coleta_anterior(db, farmacia_id: int) -> Coleta | None:
