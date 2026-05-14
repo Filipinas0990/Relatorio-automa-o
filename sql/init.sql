@@ -2,13 +2,25 @@
 -- Banco de dados: farmacia_monitor
 -- ============================================================
 
+CREATE TABLE IF NOT EXISTS gestores_trafego (
+    id          SERIAL PRIMARY KEY,
+    nome        VARCHAR(120) NOT NULL,
+    email       VARCHAR(120) UNIQUE NOT NULL,
+    senha_hash  VARCHAR(255) NOT NULL,
+    is_admin    BOOLEAN DEFAULT FALSE NOT NULL,
+    ativo       BOOLEAN DEFAULT TRUE,
+    criado_em   TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS farmacias (
-    id              SERIAL PRIMARY KEY,
-    nome            VARCHAR(120) NOT NULL,
-    url_base        VARCHAR(255) NOT NULL,
-    email           VARCHAR(120) NOT NULL,
-    ativa           BOOLEAN DEFAULT TRUE,
-    criado_em       TIMESTAMPTZ DEFAULT NOW()
+    id          SERIAL PRIMARY KEY,
+    nome        VARCHAR(120) NOT NULL,
+    url_base    VARCHAR(255) NOT NULL,
+    email       VARCHAR(120) NOT NULL,
+    senha_enc   TEXT,
+    gestor_id   INTEGER REFERENCES gestores_trafego(id) ON DELETE SET NULL,
+    ativa       BOOLEAN DEFAULT TRUE,
+    criado_em   TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS coletas (
@@ -18,30 +30,25 @@ CREATE TABLE IF NOT EXISTS coletas (
     periodo_inicio          DATE NOT NULL,
     periodo_fim             DATE NOT NULL,
 
-    -- Origem dos clientes
     clientes_google         INTEGER DEFAULT 0,
     clientes_facebook       INTEGER DEFAULT 0,
     clientes_grupos_oferta  INTEGER DEFAULT 0,
     total_atendimentos      INTEGER DEFAULT 0,
 
-    -- Vendas
     vendas_realizadas       INTEGER DEFAULT 0,
     receita_total           NUMERIC(12, 2) DEFAULT 0,
 
-    -- Variações vs semana anterior (%)
     variacao_google         NUMERIC(8, 2) DEFAULT 0,
     variacao_facebook       NUMERIC(8, 2) DEFAULT 0,
     variacao_grupos         NUMERIC(8, 2) DEFAULT 0,
     variacao_vendas         NUMERIC(8, 2) DEFAULT 0,
     variacao_receita        NUMERIC(8, 2) DEFAULT 0,
 
-    -- Criticidade
     score_criticidade       NUMERIC(5, 2) DEFAULT 0,
     nivel_alerta            VARCHAR(10) DEFAULT 'verde'
         CHECK (nivel_alerta IN ('verde', 'amarelo', 'vermelho'))
 );
 
--- Breakdown completo de todos os canais coletados
 CREATE TABLE IF NOT EXISTS coleta_canais (
     id              SERIAL PRIMARY KEY,
     coleta_id       INTEGER NOT NULL REFERENCES coletas(id) ON DELETE CASCADE,
