@@ -37,11 +37,11 @@ def carregar_farmacias() -> list[dict]:
                     except Exception:
                         senha = ""
                     resultado.append({
-                        "nome":  f.nome,
-                        "url":   f.url_base,
-                        "email": f.email,
-                        "senha": senha,
-                        "ativa": f.ativa,
+                        "nome":     f.nome,
+                        "url_base": f.url_base,
+                        "email":    f.email,
+                        "senha":    senha,
+                        "ativa":    f.ativa,
                     })
                 return resultado
         finally:
