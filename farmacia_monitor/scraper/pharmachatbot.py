@@ -382,7 +382,10 @@ async def coletar_todas(farmacias: list[dict], paralelo: int = 5) -> list[DadosF
     resultados = []
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
 
         for i in range(0, len(farmacias), paralelo):
             lote = farmacias[i: i + paralelo]
