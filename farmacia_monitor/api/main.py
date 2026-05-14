@@ -383,17 +383,31 @@ def get_farmacias(
     # Gestor comum: forçar filtro pelo seu próprio ID
     filtro = gestor_id if current_user.is_admin else current_user.id
 
+    # LEFT JOIN para incluir farmácias sem coletas ainda
+    sql = """
+        SELECT
+            f.id AS farmacia_id, f.nome AS farmacia, f.gestor_id, f.ativa,
+            COALESCE(r.nivel_alerta, 'verde')        AS nivel_alerta,
+            COALESCE(r.receita_total, 0)             AS receita_total,
+            COALESCE(r.total_atendimentos, 0)        AS total_atendimentos,
+            COALESCE(r.vendas_realizadas, 0)         AS vendas_realizadas,
+            COALESCE(r.variacao_receita, 0)          AS variacao_receita,
+            COALESCE(r.variacao_vendas, 0)           AS variacao_vendas,
+            COALESCE(r.score_criticidade, 0)         AS score_criticidade,
+            COALESCE(r.posicao_ranking, 9999)        AS posicao_ranking,
+            r.periodo_inicio, r.periodo_fim, r.data_coleta
+        FROM farmacias f
+        LEFT JOIN vw_ranking_atual r ON r.farmacia_id = f.id
+        WHERE f.ativa = TRUE
+        {filtro_sql}
+        ORDER BY posicao_ranking
+    """
     if filtro:
-        rows = db.execute(text("""
-            SELECT r.*, f.gestor_id FROM vw_ranking_atual r
-            JOIN farmacias f ON f.id = r.farmacia_id
-            WHERE f.gestor_id = :gid
-            ORDER BY r.posicao_ranking
-        """), {"gid": filtro}).mappings().all()
-    else:
         rows = db.execute(
-            text("SELECT * FROM vw_ranking_atual ORDER BY posicao_ranking")
+            text(sql.format(filtro_sql="AND f.gestor_id = :gid")), {"gid": filtro}
         ).mappings().all()
+    else:
+        rows = db.execute(text(sql.format(filtro_sql=""))).mappings().all()
 
     resultado = []
     for r in rows:
@@ -413,16 +427,16 @@ def get_farmacias(
             "gestor_id":                r.get("gestor_id"),
             "receita_total":            float(r["receita_total"] or 0),
             "total_atendimentos":       int(r["total_atendimentos"] or 0),
-            "atendimentos_finalizados": int(r.get("atendimentos_finalizados") or 0),
+            "atendimentos_finalizados": 0,
             "vendas_realizadas":        int(r["vendas_realizadas"] or 0),
-            "taxa_conversao":           float(r.get("taxa_conversao") or 0),
+            "taxa_conversao":           0,
             "variacao_receita":         float(r.get("variacao_receita") or 0),
-            "variacao_atendimentos":    float(r.get("variacao_atendimentos") or 0),
+            "variacao_atendimentos":    0,
             "variacao_vendas":          float(r.get("variacao_vendas") or 0),
             "score_criticidade":        float(r["score_criticidade"] or 0),
             "posicao_ranking":          int(r["posicao_ranking"]),
-            "periodo_inicio":           str(r["periodo_inicio"]),
-            "periodo_fim":              str(r["periodo_fim"]),
+            "periodo_inicio":           str(r["periodo_inicio"]) if r["periodo_inicio"] else None,
+            "periodo_fim":              str(r["periodo_fim"]) if r["periodo_fim"] else None,
             "data_coleta":              r["data_coleta"],
         })
 
