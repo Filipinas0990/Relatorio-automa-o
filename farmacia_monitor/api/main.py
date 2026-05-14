@@ -354,8 +354,11 @@ def get_painel(
     receita_total      = sum(float(r["receita_total"] or 0) for r in rows)
     total_atendimentos = sum(int(r["total_atendimentos"] or 0) for r in rows)
     vendas_realizadas  = sum(int(r["vendas_realizadas"] or 0) for r in rows)
-    conversoes         = [float(r["taxa_conversao"] or 0) for r in rows]
-    taxa_media         = round(sum(conversoes) / len(conversoes), 2) if conversoes else 0
+    conversoes = [
+        round(float(r["vendas_realizadas"] or 0) / float(r["total_atendimentos"]) * 100, 2)
+        for r in rows if float(r["total_atendimentos"] or 0) > 0
+    ]
+    taxa_media = round(sum(conversoes) / len(conversoes), 2) if conversoes else 0
     ultima_atualizacao = max((r["data_coleta"] for r in rows), default=None)
 
     return {
